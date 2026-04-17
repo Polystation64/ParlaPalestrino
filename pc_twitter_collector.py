@@ -27,11 +27,9 @@ BOT_TOKEN    = "parla2026verde"
 
 # Cookies da sua conta principal do Twitter
 # Exporta pelo Cookie-Editor no Chrome em x.com
-AUTH_TOKEN = "COLE_SEU_AUTH_TOKEN_AQUI"
-CT0        = "COLE_SEU_CT0_AQUI"
-
-# Usuário do Twitter (sem @)
-TWITTER_USERNAME = "COLE_SEU_USUARIO_AQUI"
+AUTH_TOKEN = "00bc17479d9b5a89f120c4a6fdd44b9852be35af"  # auth_token do @ParlaPalestrino
+CT0        = "514f38a6d9e3bae7c54da6d3d2733be26f902864d94967514b4b307331e70ea19ca345a1f63e5ba7788dd13bd136c772c2c6bcfc5037eb29c2a3fc16bdf43d9c5db7f65ae367645b77aea9f22990a2a9"
+TWITTER_USERNAME = "Oscardashopee"
 # ─────────────────────────────────────────────
 
 DB_PATH = "pc_accounts.db"
