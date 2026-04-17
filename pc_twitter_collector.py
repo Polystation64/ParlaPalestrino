@@ -1,15 +1,15 @@
 """
-pc_twitter_collector.py — usa Scweet (confirmado funcionando 2026)
+pc_twitter_collector.py — versão final com Scweet
 
 Roda NO SEU PC (IP residencial).
 Busca tweets sobre Palmeiras e envia para o servidor.
 
 Instala: pip install scweet httpx
-Configura: preenche AUTH_TOKEN, CT0 e TWITTER_USERNAME abaixo
-Roda: python pc_twitter_collector.py
-Agenda no Agendador de Tarefas do Windows a cada 30min
+Preenche AUTH_TOKEN, CT0 e TWITTER_USERNAME abaixo.
+Agenda no Agendador de Tarefas do Windows a cada 30min.
 """
 
+import os
 import json
 import hashlib
 import httpx
@@ -23,17 +23,15 @@ BOT_TOKEN        = "parla2026verde"
 AUTH_TOKEN       = "00bc17479d9b5a89f120c4a6fdd44b9852be35af"
 CT0              = "514f38a6d9e3bae7c54da6d3d2733be26f902864d94967514b4b307331e70ea19ca345a1f63e5ba7788dd13bd136c772c2c6bcfc5037eb29c2a3fc16bdf43d9c5db7f65ae367645b77aea9f22990a2a9"
 TWITTER_USERNAME = "oscardashopee"
+STATE_DB         = "scweet_state.db"   # apagado a cada run para resetar limites
 # ─────────────────────────────────────────────
 
+# 4 queries por ciclo — equilibrio entre cobertura e limite da conta
 SEARCH_QUERIES = [
-    "Palmeiras min_faves:100 lang:pt",
     "#Palmeiras min_faves:50",
-    "Verdão min_faves:100 lang:pt",
-    "Palmeiras Libertadores lang:pt",
-    "Abel Ferreira Palmeiras lang:pt",
-    "Estêvão Palmeiras lang:pt",
-    "Palmeiras escalação lang:pt",
-    "Palmeiras contratação lang:pt",
+    "Palmeiras min_faves:100 lang:pt",
+    "Verdão OR Alviverde min_faves:100 lang:pt",
+    "Palmeiras Libertadores OR escalação OR contratação lang:pt",
 ]
 
 KW_PALMEIRAS = [
@@ -52,6 +50,11 @@ def _hash(u): return hashlib.md5(u.encode()).hexdigest()
 def collect_tweets() -> list:
     print(f"[PC] Iniciando — {datetime.now().strftime('%d/%m %H:%M:%S')}")
 
+    # Apaga o estado anterior para resetar o contador diário do Scweet
+    if os.path.exists(STATE_DB):
+        os.remove(STATE_DB)
+        print("[PC] Estado resetado.")
+
     try:
         from Scweet import Scweet
     except ImportError:
@@ -65,7 +68,7 @@ def collect_tweets() -> list:
         print(f"[PC] Erro de autenticação: {e}")
         return []
 
-    # Busca desde ontem para pegar notícias recentes
+    # Busca tweets das últimas 3 horas
     since = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d")
 
     all_items = []
@@ -73,16 +76,15 @@ def collect_tweets() -> list:
 
     for query in SEARCH_QUERIES:
         try:
-            print(f"[PC] Buscando: {query[:50]}...")
-            tweets = s.search(query, since=since, limit=20, save=False)
+            print(f"[PC] Buscando: {query[:60]}...")
+            tweets = s.search(query, since=since, limit=25, save=False)
 
-            if tweets is None:
+            if not tweets:
                 print("  → Sem resultados")
                 continue
 
             count = 0
             for tweet in tweets:
-                # Scweet retorna dicts com campos padronizados
                 tid = str(tweet.get("tweet_id") or tweet.get("id") or "")
                 if not tid or tid in seen_ids:
                     continue
@@ -105,13 +107,16 @@ def collect_tweets() -> list:
                 elif rts  > 100:   score += 5
                 elif rts  > 20:    score += 2
 
+                img_links = tweet.get("image_links")
+                image_url = img_links[0] if img_links else None
+
                 all_items.append({
                     "text":         text,
                     "url":          url,
                     "source":       f"Twitter @{username} (PC)",
                     "published_at": pub,
                     "score":        score,
-                    "image_url":    tweet.get("image_links", [None])[0] if tweet.get("image_links") else None,
+                    "image_url":    image_url,
                 })
                 count += 1
 
@@ -138,11 +143,11 @@ def send_to_server(tweets: list):
         )
         if resp.status_code == 200:
             data = resp.json()
-            print(f"[PC] Servidor: {data.get('total',0)} recebidos, {data.get('saved',0)} novos.")
+            print(f"[PC] ✅ Servidor: {data.get('total',0)} recebidos, {data.get('saved',0)} novos.")
         else:
-            print(f"[PC] Erro no servidor: {resp.status_code} — {resp.text[:100]}")
+            print(f"[PC] ❌ Servidor retornou: {resp.status_code}")
     except Exception as e:
-        print(f"[PC] Falha ao enviar: {e}")
+        print(f"[PC] ❌ Falha ao enviar: {e}")
 
 
 if __name__ == "__main__":
