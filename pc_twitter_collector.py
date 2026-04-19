@@ -91,7 +91,7 @@ def collect_tweets() -> list:
                 seen_ids.add(tid)
 
                 text     = str(tweet.get("text") or tweet.get("full_text") or "")[:300]
-                username = str(tweet.get("username") or tweet.get("user_screen_name") or "unknown")
+                username = str(tweet.get("username") or tweet.get("user_screen_name") or tweet.get("user") or tweet.get("screen_name") or "palmeiras_fan")
                 url      = f"https://x.com/{username}/status/{tid}"
                 pub      = str(tweet.get("timestamp") or tweet.get("created_at") or datetime.now(timezone.utc).isoformat())
 
