@@ -254,46 +254,6 @@ async def run_scraper():
     total = agenda_items + rss_items
     print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS + tweets do PC no banco).")
     return total
-
-# ── TWITTER ────────────────────────────────────────────────────────────────────
-async def scrape_twitter():
-    """Desativado no servidor. Tweets chegam via pc_twitter_collector.py (IP residencial)."""
-    return []
-
-async def _get_tw_api():
-    return None
-
-# ── ENTRY POINT ──────────────────────────────
-async def run_scraper():
-    # Limpa Agenda Oficial velha (jogos passados) do radar
-    try:
-        from db import mark_past_agendas_as_tweeted
-        purged = mark_past_agendas_as_tweeted(NEWS_MAX_AGE_HOURS)
-        if purged:
-            print(f"[Scraper] Purgado {purged} Agenda(s) Oficial(is) passada(s).")
-    except Exception as e:
-        print(f"[Scraper] Cleanup falhou: {e}")
-    agenda_items = []
-    try:
-        a = check_agenda()
-        if a:
-            agenda_items = [agenda_to_item(a)]
-            print(f"[Agenda] Jogo {'HOJE' if a['hoje'] else 'AMANHÃ'}: Palmeiras x {a['adversario']}")
-    except Exception as e:
-        print(f"[Agenda] Erro: {e}")
-    rss_items = scrape_rss()
-    total = agenda_items + rss_items
-    print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS + tweets do PC no banco).")
-    return total
-                    # que passaram score+idade, para não inflar latência).
-                    img = _og_image(link)
-                items.append({"hash":_hash(link),"title":title,"url":link,
-                               "source":source,"published_at":pub,"score":s,
-                               "image_url": img})
-        except Exception as ex:
-            print(f"[RSS] {source}: {ex}")
-    with_img = sum(1 for it in items if it.get("image_url"))
-    print(f"[Scraper] RSS: {len(items)} itens ({with_img} com imagem).")
     return items
 
 # ── TWITTER ────────────────────────────────────────────────────────────────────
