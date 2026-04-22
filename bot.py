@@ -25,6 +25,25 @@ TZ_SP = ZoneInfo("America/Sao_Paulo")
 _last_radar: dict = {}
 
 
+def _dedup_titles(items: list, threshold: float = 0.5) -> list:
+    """Remove itens com título muito similar ao de um item já selecionado (maior score vence)."""
+    kept = []
+    for item in items:
+        words = set(w for w in item["title"].lower().split() if len(w) > 4)
+        duplicate = False
+        for seen in kept:
+            seen_words = set(w for w in seen["title"].lower().split() if len(w) > 4)
+            if not words or not seen_words:
+                continue
+            overlap = len(words & seen_words) / min(len(words), len(seen_words))
+            if overlap >= threshold:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(item)
+    return kept
+
+
 # ─────────────────────────────────────────────
 # RADAR CYCLE
 # ─────────────────────────────────────────────
@@ -45,6 +64,7 @@ async def run_radar_cycle(app: Application, chat_id=None) -> bool:
              "published_at": r[4], "score": r[5], "image_url": r[6]}
             for r in top
         ]
+        top_dicts = _dedup_titles(top_dicts)
 
         logger.info(f"Enriquecendo {len(top_dicts)} itens...")
         enriched = enrich_radar(top_dicts)

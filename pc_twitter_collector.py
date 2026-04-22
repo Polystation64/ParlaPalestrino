@@ -42,7 +42,7 @@ KW_PALMEIRAS = [
 
 def _score(text: str) -> int:
     t = text.lower()
-    return max(sum(8 for k in KW_PALMEIRAS if k in t), 8)
+    return sum(8 for k in KW_PALMEIRAS if k in t)
 
 def _hash(u): return hashlib.md5(u.encode()).hexdigest()
 
@@ -133,6 +133,8 @@ def collect_tweets() -> list:
                 rts   = int(tweet.get("retweets") or tweet.get("retweet_count") or 0)
 
                 score = _score(text)
+                if score == 0 or len(text.strip()) < 20:
+                    continue
                 if likes  > 5000: score += 15
                 elif likes > 1000: score += 10
                 elif likes > 200:  score += 6

@@ -52,7 +52,8 @@ def _call(system, prompt, max_tokens=1400):
 
 _ENRICH_SYSTEM = """Você é editor do @ParlaPalestrino, conta informativa sobre o Palmeiras.
 Analise cada notícia e devolva SOMENTE um JSON válido, sem markdown, sem explicações.
-Para cada item retorne: rotulo (um de: "🚨 NOTÍCIA QUENTE"|"✅ CONFIRMADO"|"📌 CONTEXTO"|"⚽️ JOGO"|"💰 VALORES"|"🏆 MARCO"), titulo_curto (até 60 chars), o_que_e (1 frase, máx 80 chars), por_que_importa (1 frase, máx 80 chars), imagem (sugestão em 5 palavras), is_rumor (true/false)"""
+IMPORTANTE: escreva SEMPRE em português brasileiro com acentuação correta (ã, ç, é, ã, etc.).
+Para cada item retorne: rotulo (um de: "🚨 NOTÍCIA QUENTE"|"✅ CONFIRMADO"|"📌 CONTEXTO"|"⚽️ JOGO"|"💰 VALORES"|"🏆 MARCO"), titulo_curto (até 60 chars), o_que_e (1 frase clara e específica, máx 80 chars — descreva o fato concreto, nunca frases genéricas como "informação sobre jogador"), por_que_importa (1 frase, máx 80 chars), imagem (sugestão em 5 palavras), is_rumor (true/false)"""
 
 
 def enrich_radar(items):
