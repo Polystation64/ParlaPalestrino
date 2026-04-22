@@ -7,6 +7,20 @@ from config import (
     OPENAI_API_KEY, OPENAI_MODEL,
 )
 
+# Veículos cujo crédito "🗞️ Fonte:" aparece no rodapé do tweet.
+_EDITORIAL_SOURCES = {
+    "globo esporte": "ge",
+    "ge":            "ge",
+    "lance":         "Lance",
+    "uol esporte":   "UOL",
+    "espn brasil":   "ESPN",
+    "estadão":       "Estadão",
+    "folha":         "Folha",
+    "google news":   None,    # genérico, não credita
+    "agenda oficial": None,   # jogo — usa 📺 Transmissão
+}
+
+
 def _providers():
     p = []
     if GROQ_API_KEY:
@@ -19,20 +33,27 @@ def _providers():
         p.append(("OpenAI", OpenAI(api_key=OPENAI_API_KEY), OPENAI_MODEL))
     return p
 
-def _call(system, prompt):
+
+def _call(system, prompt, max_tokens=1400):
     for name, client, model in _providers():
         try:
             print(f"[Generator] Tentando {name} ({model})...")
-            resp = client.chat.completions.create(model=model, messages=[{"role":"system","content":system},{"role":"user","content":prompt}], max_tokens=1200, temperature=0.7)
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role":"system","content":system},{"role":"user","content":prompt}],
+                max_tokens=max_tokens, temperature=0.7,
+            )
             print(f"[Generator] OK com {name}.")
             return resp.choices[0].message.content.strip()
         except Exception as e:
             print(f"[Generator] {name} falhou: {e}")
     return None
 
+
 _ENRICH_SYSTEM = """Você é editor do @ParlaPalestrino, conta informativa sobre o Palmeiras.
 Analise cada notícia e devolva SOMENTE um JSON válido, sem markdown, sem explicações.
 Para cada item retorne: rotulo (um de: "🚨 NOTÍCIA QUENTE"|"✅ CONFIRMADO"|"📌 CONTEXTO"|"⚽️ JOGO"|"💰 VALORES"|"🏆 MARCO"), titulo_curto (até 60 chars), o_que_e (1 frase, máx 80 chars), por_que_importa (1 frase, máx 80 chars), imagem (sugestão em 5 palavras), is_rumor (true/false)"""
+
 
 def enrich_radar(items):
     if not items:
@@ -58,22 +79,111 @@ Retorne SOMENTE o JSON array, sem markdown."""
         print(f"[Generator] Parse falhou: {e}")
         return items
 
-_TWEET_SYSTEM = """Você é o redator do @ParlaPalestrino no Twitter/X.
-Tom: diagnóstico informativo. Público: torcida do Palmeiras.
-ESTRUTURA: 1ª linha emoji+fato | 2ª contexto | 3ª implicação prática | linha final 🗞 Fonte se relevante.
-REGRAS: sempre começa com emoji | quebras de linha | máx 2 emojis | sem hashtags | sem opinião | rumor leva trava.
-ENTREGUE: [A] Informativa  [B] Engajamento (pergunta)  [C] Explicador (3 linhas: aconteceu/muda/falta)
-Máx 280 chars cada. SOMENTE as 3 versões."""
 
-def generate_tweet(news_titles):
-    if not news_titles:
+# ─────────────────────────────────────────────
+# TWEET GENERATION (formato editorial @ParlaPalestrino)
+# ─────────────────────────────────────────────
+_TWEET_SYSTEM = """Você é o redator do @ParlaPalestrino no Twitter/X, conta verificada (X Premium — texto longo liberado).
+Tom: diagnóstico informativo, sem opinião emotiva do narrador. Público: torcida adulta e engajada do Palmeiras.
+
+FORMATO OBRIGATÓRIO (siga exatamente):
+Linha 1: emoji temático + gancho forte (1 frase com o fato principal).
+Linha em branco.
+1-2 parágrafos (2-4 frases cada) com contexto + implicação prática para o clube, elenco ou torcida.
+Linha em branco.
+Rodapé (condicional):
+  - Se CREDITO_FONTE for fornecido, inclua: 🗞️ Fonte: {CREDITO_FONTE}
+  - Se TRANSMISSAO for fornecido (jogo), inclua: 📺 Transmissão: {TRANSMISSAO}
+  - Se TEM_IMAGEM=sim, inclua uma última linha: 📸 Reprodução
+
+EMOJI INICIAL (escolha UM, baseado no teor do assunto):
+🚨 lesão, baixa, alerta crítico, STJD
+⚽️ jogo, agenda oficial, convocação, escalação
+✅ confirmação oficial
+💰 ou 🤑 valores, contratos, naming rights, dinheiro, rescisão
+🏆 título, marco histórico, final, conquista
+📰 notícia factual geral
+🎯 estratégia, análise tática, esquema
+🔄 renovação, transferência, troca
+
+REGRAS:
+- Entre 280 e 900 caracteres TOTAL (X Premium aceita texto longo).
+- Sempre quebras de linha DUPLAS entre gancho, corpo e rodapé.
+- Sem hashtags.
+- Sem opinião do narrador ("acho", "adoro", "torço"). Diagnóstico neutro.
+- Rumor: usar trava explícita ("ainda não é confirmado", "informação em verificação").
+- Máximo 2 emojis no corpo (fora do rodapé e do inicial).
+- NÃO repita palavras do título no gancho se soar redundante — reescreva em tom editorial.
+
+ENTREGUE 3 VERSÕES, SOMENTE estas, cada uma começando com o marcador em colchete:
+[A] Informativa — foca em fato + contexto + implicação.
+[B] Engajamento — mesma estrutura, terminando com 1 pergunta curta à torcida (ANTES do rodapé).
+[C] Explicador — organizado em 3 mini-seções: "Aconteceu:", "Muda:", "Falta:" (ou "Observar:"). Cada uma em 1-2 linhas.
+
+NADA além das 3 versões. Não explique, não comente, não use markdown."""
+
+
+def generate_tweet(items_or_titles, image_url: str | None = None):
+    """
+    Gera 3 versões de tweet. Aceita lista de dicts (preferido) ou lista de strings (retro-compat).
+
+    Se receber dicts, extrai source/transmissao/image para construir o rodapé contextual.
+    """
+    if not items_or_titles:
         return []
-    context = "\n".join(f"- {t}" for t in news_titles)
-    prompt = f"Notícia(s):\n{context}\n\nGere [A] [B] [C]. Máx 280 chars cada."
-    raw = _call(_TWEET_SYSTEM, prompt)
+
+    # Retro-compatibilidade: lista de strings.
+    if isinstance(items_or_titles[0], str):
+        titles    = list(items_or_titles)
+        sources   = []
+        transmissao = None
+        has_image = bool(image_url)
+    else:
+        titles      = [it["title"] for it in items_or_titles]
+        sources     = [it.get("source","") for it in items_or_titles]
+        has_image   = bool(image_url) or any(it.get("image_url") for it in items_or_titles)
+        # Tenta extrair transmissão do título de Agenda Oficial.
+        transmissao = None
+        for it in items_or_titles:
+            if it.get("source") == "Agenda Oficial":
+                t = it.get("title","")
+                # formato: "⚽️ JOGO HOJE: Palmeiras x X — HH:MM (COMP) | TRANSMISSAO"
+                if "|" in t:
+                    transmissao = t.rsplit("|", 1)[-1].strip()
+                break
+
+    # Monta crédito: pega a primeira fonte editorial reconhecida.
+    credito_fonte = None
+    for s in sources:
+        key = (s or "").strip().lower()
+        if key in _EDITORIAL_SOURCES:
+            credito_fonte = _EDITORIAL_SOURCES[key]
+            if credito_fonte:
+                break
+
+    context = "\n".join(f"- {t}" for t in titles)
+
+    ctx_parts = []
+    if credito_fonte:
+        ctx_parts.append(f"CREDITO_FONTE: {credito_fonte}")
+    if transmissao and transmissao.lower() not in ("a confirmar",""):
+        ctx_parts.append(f"TRANSMISSAO: {transmissao}")
+    ctx_parts.append(f"TEM_IMAGEM: {'sim' if has_image else 'nao'}")
+    ctx_block = "\n".join(ctx_parts)
+
+    prompt = f"""Notícia(s):
+{context}
+
+Contexto para o rodapé:
+{ctx_block}
+
+Gere [A], [B] e [C] seguindo ESTRITAMENTE o formato do system prompt (entre 280 e 900 chars cada, com rodapé apropriado)."""
+
+    raw = _call(_TWEET_SYSTEM, prompt, max_tokens=1800)
     if not raw:
         return []
-    return [o[:280] for o in _parse(raw) if o][:3]
+    return [o[:1500] for o in _parse(raw) if o][:3]
+
 
 def _parse(text):
     options = []

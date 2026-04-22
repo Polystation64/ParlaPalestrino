@@ -28,18 +28,17 @@ _last_radar: dict = {}
 # ─────────────────────────────────────────────
 # RADAR CYCLE
 # ─────────────────────────────────────────────
-async def run_radar_cycle(app: Application):
+async def run_radar_cycle(app: Application) -> bool:
     logger.info("Iniciando ciclo do radar...")
     try:
         items     = await run_scraper()
         new_count = save_news(items)
-        if new_count == 0:
-            logger.info("Nenhuma notícia nova.")
-            return
+        logger.info(f"Notícias novas no ciclo: {new_count}")
 
         top = get_top_news(limit=MAX_NEWS_PER_RADAR)
         if not top:
-            return
+            logger.info("Banco sem itens dentro da janela — radar não enviado.")
+            return False
 
         top_dicts = [
             {"id": r[0], "title": r[1], "url": r[2], "source": r[3],
@@ -54,10 +53,11 @@ async def run_radar_cycle(app: Application):
         _last_radar[msg.message_id] = enriched
         if len(_last_radar) > 3:
             del _last_radar[min(_last_radar.keys())]
+        return True
 
     except Exception as e:
         logger.error(f"Erro no radar: {e}", exc_info=True)
-
+        return False
 
 async def _send_radar(app: Application, items: list):
     # Hora em São Paulo (não UTC)
@@ -133,10 +133,11 @@ async def _handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     thinking = await update.message.reply_text("✍️ Gerando opções de tweet...")
 
-    titles    = [it["title"] for it in selected]
     news_ids  = [it["id"] for it in selected]
     image_url = next((it.get("image_url") for it in selected if it.get("image_url")), None)
-    options   = generate_tweet(titles)
+    # Passa os dicts completos para o generator produzir rodapé contextual
+    # (🗞️ Fonte / 📺 Transmissão / 📸 Reprodução).
+    options   = generate_tweet(selected, image_url=image_url)
 
     await thinking.delete()
 
@@ -160,7 +161,8 @@ async def _handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, opt in enumerate(options):
         pending_id = save_pending_tweet(news_ids, opt, image_url)
         chars      = len(opt)
-        warn       = " ⚠️" if chars > 270 else ""
+        # Conta verificada (X Premium) aceita até ~4000 chars; editorial fica ~900.
+        warn       = " ⚠️" if chars > 1500 else ""
         img_badge  = " 🖼️" if image_url else ""
 
         keyboard = InlineKeyboardMarkup([[
@@ -170,7 +172,7 @@ async def _handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]])
 
         await update.message.reply_text(
-            f"*{labels.get(i,f'Opção {i+1}')}* ({chars}/280{warn}{img_badge}):\n\n{opt}",
+            f"*{labels.get(i,f'Opção {i+1}')}* ({chars} chars{warn}{img_badge}):\n\n{opt}",
             parse_mode="Markdown",
             reply_markup=keyboard,
         )
@@ -179,8 +181,9 @@ async def _handle_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending_id = context.user_data.pop("editing_tweet_id")
     new_text   = update.message.text.strip()
-    if len(new_text) > 280:
-        await update.message.reply_text(f"❌ {len(new_text)}/280. Tente de novo:")
+    # X Premium aceita textos longos; limitamos a 1500 para o formato editorial.
+    if len(new_text) > 1500:
+        await update.message.reply_text(f"❌ {len(new_text)} chars (máx 1500). Tente de novo:")
         context.user_data["editing_tweet_id"] = pending_id
         return
 
@@ -199,7 +202,7 @@ async def _handle_edit_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
         InlineKeyboardButton(f"✅ Postar{img_badge}", callback_data=f"post:{new_pending_id}"),
     ]])
     await update.message.reply_text(
-        f"*Preview ({len(new_text)}/280{img_badge}):*\n\n{new_text}",
+        f"*Preview ({len(new_text)} chars{img_badge}):*\n\n{new_text}",
         parse_mode="Markdown",
         reply_markup=keyboard,
     )
@@ -224,7 +227,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, _, tweet_text, _ = row
         context.user_data["editing_tweet_id"] = pid
         await query.edit_message_text(
-            f"✏️ *Edição ativa.* Envie o novo texto (max 280):\n\n`{tweet_text}`",
+            f"✏️ *Edição ativa.* Envie o novo texto (máx 1500 chars):\n\n`{tweet_text}`",
             parse_mode="Markdown",
         )
     elif action == "discard":
@@ -276,8 +279,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Buscando e analisando...")
-    await run_radar_cycle(context.application)
+    sent = await run_radar_cycle(context.application)
     await msg.delete()
+    if not sent:
+        await update.message.reply_text("📭 Nenhuma notícia nova encontrada na janela de tempo atual.")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -446,6 +451,14 @@ def main():
 
     scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
     scheduler.add_job(run_radar_cycle, "interval", minutes=SCRAPE_INTERVAL_MINUTES,
+                      args=[app], id="radar_cycle", max_instances=1, coalesce=True)
+    scheduler.start()
+    logger.info(f"Bot iniciado. Radar a cada {SCRAPE_INTERVAL_MINUTES} min.")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
+l", minutes=SCRAPE_INTERVAL_MINUTES,
                       args=[app], id="radar_cycle", max_instances=1, coalesce=True)
     scheduler.start()
     logger.info(f"Bot iniciado. Radar a cada {SCRAPE_INTERVAL_MINUTES} min.")

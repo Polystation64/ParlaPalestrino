@@ -1,5 +1,5 @@
 """
-pc_twitter_collector.py — versão final com Scweet
+pc_twitter_collector.py — versão final com Scweet 5.3
 
 Roda NO SEU PC (IP residencial).
 Busca tweets sobre Palmeiras e envia para o servidor.
@@ -85,20 +85,54 @@ def collect_tweets() -> list:
 
             count = 0
             for tweet in tweets:
+                # Scweet 5.3 retorna dicts (via model_dump) com estrutura aninhada:
+                #   { tweet_id, user:{screen_name,name}, timestamp, text, embedded_text,
+                #     likes, retweets, comments, media:{image_links:[...]}, tweet_url, raw:{...} }
                 tid = str(tweet.get("tweet_id") or tweet.get("id") or "")
                 if not tid or tid in seen_ids:
                     continue
                 seen_ids.add(tid)
 
-                text     = str(tweet.get("text") or tweet.get("full_text") or "")[:300]
-                username = str(tweet.get("username") or tweet.get("user_screen_name") or tweet.get("user") or tweet.get("screen_name") or "palmeiras_fan")
-                url      = f"https://x.com/{username}/status/{tid}"
-                pub      = str(tweet.get("timestamp") or tweet.get("created_at") or datetime.now(timezone.utc).isoformat())
+                text = str(
+                    tweet.get("text")
+                    or tweet.get("embedded_text")
+                    or tweet.get("full_text")
+                    or ""
+                )[:300]
+
+                # user é sempre um dict aninhado no Scweet 5.3.
+                user_obj = tweet.get("user") or {}
+                if isinstance(user_obj, dict):
+                    username = user_obj.get("screen_name") or user_obj.get("name") or "palmeiras_fan"
+                else:
+                    username = str(user_obj) or "palmeiras_fan"
+                username = str(username).strip().lstrip("@").replace(" ", "")[:50] or "palmeiras_fan"
+
+                url = tweet.get("tweet_url") or f"https://x.com/{username}/status/{tid}"
+                raw_pub = tweet.get("timestamp") or tweet.get("created_at")
+                pub = None
+                if raw_pub:
+                    try:
+                        # Se for int/float ou string de dígitos (timestamp Unix)
+                        if isinstance(raw_pub, (int, float)) or (isinstance(raw_pub, str) and raw_pub.isdigit()):
+                            pub = datetime.fromtimestamp(float(raw_pub), timezone.utc).isoformat()
+                        elif isinstance(raw_pub, str):
+                            # Tenta parsear formato nativo do Twitter (ex: "Mon Apr 21 16:16:48 +0000 2026")
+                            if len(raw_pub.split()) == 6 and "+0000" in raw_pub:
+                                pub = datetime.strptime(raw_pub, "%a %b %d %H:%M:%S %z %Y").astimezone(timezone.utc).isoformat()
+                            elif raw_pub.endswith("Z") or "T" in raw_pub:
+                                pub = raw_pub  # ISO format já compatível com sqlite
+                    except Exception as e:
+                        print(f"Erro parseando data {raw_pub}: {e}")
+                
+                if not pub:
+                    pub = datetime.now(timezone.utc).isoformat()
+
+                # Campos novos do Scweet 5.3: `likes` e `retweets` (sem sufixo _count).
+                likes = int(tweet.get("likes") or tweet.get("likes_count") or tweet.get("favorite_count") or 0)
+                rts   = int(tweet.get("retweets") or tweet.get("retweet_count") or 0)
 
                 score = _score(text)
-                likes = int(tweet.get("likes_count") or tweet.get("favorite_count") or 0)
-                rts   = int(tweet.get("retweet_count") or 0)
-
                 if likes  > 5000: score += 15
                 elif likes > 1000: score += 10
                 elif likes > 200:  score += 6
@@ -107,8 +141,18 @@ def collect_tweets() -> list:
                 elif rts  > 100:   score += 5
                 elif rts  > 20:    score += 2
 
-                img_links = tweet.get("image_links")
-                image_url = img_links[0] if img_links else None
+                # Imagem: tweet["media"]["image_links"][0] em Scweet 5.3.
+                image_url = None
+                media_obj = tweet.get("media") or {}
+                if isinstance(media_obj, dict):
+                    imgs = media_obj.get("image_links") or []
+                    if imgs:
+                        image_url = imgs[0]
+                # Fallback: alguns exports antigos expõem direto em image_links.
+                if not image_url:
+                    imgs = tweet.get("image_links") or []
+                    if imgs and isinstance(imgs, list):
+                        image_url = imgs[0]
 
                 all_items.append({
                     "text":         text,

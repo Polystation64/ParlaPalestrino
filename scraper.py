@@ -63,6 +63,22 @@ def _infer_time(it):
     m = re.fullmatch(r"(\d{1,2})H(\d{2})", h)
     return f"{int(m.group(1)):02d}:{m.group(2)}" if m else h or "a confirmar"
 
+
+def _kickoff_passed(dj, hora_str, buffer_min: int = 150) -> bool:
+    """Retorna True se a hora do jogo + buffer (~duração da partida) já passou.
+    Usado para filtrar jogos passados do radar."""
+    if not hora_str:
+        return False
+    m = re.fullmatch(r'(\d{1,2}):(\d{2})', hora_str.strip())
+    if not m:
+        return False  # hora indefinida — deixa passar
+    try:
+        h, mi = int(m.group(1)), int(m.group(2))
+        kick = datetime.combine(dj, datetime.min.time(), tzinfo=TZ_SP).replace(hour=h, minute=mi)
+        return datetime.now(TZ_SP) > kick + timedelta(minutes=buffer_min)
+    except Exception:
+        return False
+
 def check_agenda():
     today = datetime.now(TZ_SP).date()
     tomorrow = today + timedelta(days=1)
@@ -70,6 +86,8 @@ def check_agenda():
         with urllib.request.urlopen("https://apiverdao.palmeiras.com.br/wp-json/apiverdao/v1/jogos-mes", timeout=10) as r:
             data = json.load(r)
         hits = [(dj,it) for it in data.get("jogos",[]) if (dj:=_infer_date(it.get("data_jogo",""),today)) in (today,tomorrow)]
+        # Remove jogos passados: se for hoje e o kickoff + 150min já passou, descarta
+        hits = [(dj,it) for dj,it in hits if not (dj == today and _kickoff_passed(dj, _infer_time(it)))]
         if not hits: return None
         hits.sort(key=lambda x:x[0])
         dj,it = hits[0]
@@ -92,10 +110,14 @@ def _agenda_espn():
             data = json.load(r)
         for e in data.get("events",[])[:40]:
             dt = datetime.fromisoformat(e["date"].replace("Z","+00:00")).astimezone(TZ_SP)
-            if dt.date() in (today,tomorrow):
-                return {"adversario":e.get("name","?"), "data":dt.strftime("%d/%m/%Y"),
-                        "hora":dt.strftime("%H:%M"), "hoje":dt.date()==today,
-                        "competicao":e.get("league",{}).get("name","?"), "transmissao":"a confirmar"}
+            if dt.date() not in (today,tomorrow):
+                continue
+            # Se já é hoje e o kickoff + 150min passou, pula para o próximo
+            if dt.date() == today and datetime.now(TZ_SP) > dt + timedelta(minutes=150):
+                continue
+            return {"adversario":e.get("name","?"), "data":dt.strftime("%d/%m/%Y"),
+                    "hora":dt.strftime("%H:%M"), "hoje":dt.date()==today,
+                    "competicao":e.get("league",{}).get("name","?"), "transmissao":"a confirmar"}
     except Exception as e:
         print(f"[Agenda] ESPN falhou: {e}")
     return None
@@ -108,6 +130,71 @@ def agenda_to_item(a):
             "source":"Agenda Oficial", "published_at":datetime.now(timezone.utc).isoformat(), "score":30}
 
 # ── RSS ────────────────────────────────────────────────────────────────────────
+def _rss_image(e):
+    """Extrai URL de imagem de uma entrada RSS (media:content, media:thumbnail,
+    enclosure ou <img> no summary/description). Retorna None se não encontrar."""
+    try:
+        for key in ("media_content", "media_thumbnail"):
+            items = e.get(key) if isinstance(e, dict) else getattr(e, key, None)
+            if items and isinstance(items, list) and items:
+                u = items[0].get("url")
+                if u:
+                    return u
+        encs = e.get("enclosures") or []
+        for en in encs:
+            u  = en.get("href") or en.get("url")
+            ty = (en.get("type") or "").lower()
+            if u and ("image" in ty or u.lower().endswith((".jpg",".jpeg",".png",".webp",".gif"))):
+                return u
+        # Fallback: parseia primeiro <img> do summary/description/content.
+        html = e.get("summary","") or e.get("description","") or ""
+        if not html and e.get("content"):
+            try:    html = e["content"][0].get("value","")
+            except Exception: pass
+        m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', html, flags=re.I)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _og_image(url: str, timeout: int = 6) -> str | None:
+    """Baixa o HTML do artigo e extrai og:image / twitter:image (meta tags).
+    Usado como último recurso quando o feed RSS não traz imagem inline.
+    Limite de 200KB para evitar sugar páginas gigantes."""
+    try:
+        # Google News usa URLs proxy (news.google.com/rss/articles/…) que redirecionam.
+        # urllib segue redirects por padrão.
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml",
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read(250_000).decode("utf-8", errors="ignore")
+        # og:image (Open Graph) — prioritário.
+        patterns = (
+            r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image(?::secure_url)?["\']',
+            r'<meta[^>]+name=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image(?::src)?["\']',
+        )
+        for p in patterns:
+            m = re.search(p, html, flags=re.I)
+            if m:
+                u = m.group(1).strip()
+                # HTML entities básicos.
+                u = u.replace("&amp;", "&")
+                if u.startswith("//"):
+                    u = "https:" + u
+                if u.startswith("http"):
+                    return u
+    except Exception:
+        pass
+    return None
+
+
 def scrape_rss():
     max_age = NEWS_MAX_AGE_HOURS * 60
     items = []
@@ -123,69 +210,38 @@ def scrape_rss():
                 s = _score(title)
                 if s == 0: continue
                 s += 5 if age<30 else (3 if age<60 else 0)
+                img = _rss_image(e)
+                if not img:
+                    # RSS sem imagem — tenta og:image do artigo (apenas para itens
+                    # que passaram score+idade, para não inflar latência).
+                    img = _og_image(link)
                 items.append({"hash":_hash(link),"title":title,"url":link,
-                               "source":source,"published_at":pub,"score":s})
+                               "source":source,"published_at":pub,"score":s,
+                               "image_url": img})
         except Exception as ex:
             print(f"[RSS] {source}: {ex}")
-    print(f"[Scraper] RSS: {len(items)} itens.")
+    with_img = sum(1 for it in items if it.get("image_url"))
+    print(f"[Scraper] RSS: {len(items)} itens ({with_img} com imagem).")
     return items
 
 # ── TWITTER ────────────────────────────────────────────────────────────────────
-_tw_api = None
+async def scrape_twitter():
+    """Desativado no servidor. Tweets chegam via pc_twitter_collector.py (IP residencial)."""
+    return []
 
 async def _get_tw_api():
-    global _tw_api
-    if _tw_api: return _tw_api
-    api = TwAPI(TWSCRAPE_DB)
-    if not await api.pool.get_all():
-        print("[twscrape] Adicionando conta scraper...")
-        await api.pool.add_account(username=SCRAPER_TWITTER_USER, password=SCRAPER_TWITTER_PASS,
-                                   email=SCRAPER_TWITTER_EMAIL, email_password=SCRAPER_TWITTER_EMAIL_PASS)
-        await api.pool.login_all()
-    _tw_api = api
-    return _tw_api
+    return None
 
-async def scrape_twitter():
-    max_age = NEWS_MAX_AGE_HOURS * 60
-    items = []
-    try:
-        api = await _get_tw_api()
-    except Exception as e:
-        print(f"[twscrape] Init falhou: {e}")
-        return []
-    for query in ["Palmeiras lang:pt min_faves:50","Palmeiras Libertadores lang:pt","#Palmeiras min_faves:100"]:
-        try:
-            # Timeout de 30s por query — se rate limit, pula e continua com RSS
-            async def _search_with_timeout(q):
-                results = []
-                async for t in api.search(q, limit=20):
-                    results.append(t)
-                return results
-            import asyncio as _asyncio
-            try:
-                tweets = await _asyncio.wait_for(_search_with_timeout(query), timeout=30)
-            except _asyncio.TimeoutError:
-                print(f"[twscrape] Timeout na query '{query}' — pulando.")
-                continue
-            for t in tweets:
-                text = t.rawContent[:250]
-                url  = f"https://x.com/{t.user.username}/status/{t.id}"
-                pub  = t.date.isoformat() if t.date else datetime.now(timezone.utc).isoformat()
-                if _age(pub) > max_age: continue
-                s = _score(text)
-                if s == 0: continue
-                s += (6 if t.likeCount>500 else 3 if t.likeCount>100 else 0)
-                s += (4 if t.retweetCount>100 else 2 if t.retweetCount>30 else 0)
-                items.append({"hash":_hash(url),"title":text,"url":url,
-                               "source":f"Twitter @{t.user.username}",
-                               "published_at":pub,"score":s})
-        except Exception as e:
-            print(f"[twscrape] '{query}': {e}")
-    print(f"[Scraper] Twitter: {len(items)} itens.")
-    return items
-
-# ── ENTRY POINT ────────────────────────────────────────────────────────────────
+# ── ENTRY POINT ──────────────────────────────
 async def run_scraper():
+    # Limpa Agenda Oficial velha (jogos passados) do radar
+    try:
+        from db import mark_past_agendas_as_tweeted
+        purged = mark_past_agendas_as_tweeted(NEWS_MAX_AGE_HOURS)
+        if purged:
+            print(f"[Scraper] Purgado {purged} Agenda(s) Oficial(is) passada(s).")
+    except Exception as e:
+        print(f"[Scraper] Cleanup falhou: {e}")
     agenda_items = []
     try:
         a = check_agenda()
@@ -194,9 +250,79 @@ async def run_scraper():
             print(f"[Agenda] Jogo {'HOJE' if a['hoje'] else 'AMANHÃ'}: Palmeiras x {a['adversario']}")
     except Exception as e:
         print(f"[Agenda] Erro: {e}")
-
     rss_items = scrape_rss()
-    tw_items  = await scrape_twitter()
-    total = agenda_items + rss_items + tw_items
-    print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS, {len(tw_items)} Twitter).")
+    total = agenda_items + rss_items
+    print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS + tweets do PC no banco).")
+    return total
+
+# ── TWITTER ────────────────────────────────────────────────────────────────────
+async def scrape_twitter():
+    """Desativado no servidor. Tweets chegam via pc_twitter_collector.py (IP residencial)."""
+    return []
+
+async def _get_tw_api():
+    return None
+
+# ── ENTRY POINT ──────────────────────────────
+async def run_scraper():
+    # Limpa Agenda Oficial velha (jogos passados) do radar
+    try:
+        from db import mark_past_agendas_as_tweeted
+        purged = mark_past_agendas_as_tweeted(NEWS_MAX_AGE_HOURS)
+        if purged:
+            print(f"[Scraper] Purgado {purged} Agenda(s) Oficial(is) passada(s).")
+    except Exception as e:
+        print(f"[Scraper] Cleanup falhou: {e}")
+    agenda_items = []
+    try:
+        a = check_agenda()
+        if a:
+            agenda_items = [agenda_to_item(a)]
+            print(f"[Agenda] Jogo {'HOJE' if a['hoje'] else 'AMANHÃ'}: Palmeiras x {a['adversario']}")
+    except Exception as e:
+        print(f"[Agenda] Erro: {e}")
+    rss_items = scrape_rss()
+    total = agenda_items + rss_items
+    print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS + tweets do PC no banco).")
+    return total
+                    # que passaram score+idade, para não inflar latência).
+                    img = _og_image(link)
+                items.append({"hash":_hash(link),"title":title,"url":link,
+                               "source":source,"published_at":pub,"score":s,
+                               "image_url": img})
+        except Exception as ex:
+            print(f"[RSS] {source}: {ex}")
+    with_img = sum(1 for it in items if it.get("image_url"))
+    print(f"[Scraper] RSS: {len(items)} itens ({with_img} com imagem).")
+    return items
+
+# ── TWITTER ────────────────────────────────────────────────────────────────────
+async def scrape_twitter():
+    """Desativado no servidor. Tweets chegam via pc_twitter_collector.py (IP residencial)."""
+    return []
+
+async def _get_tw_api():
+    return None
+
+# ── ENTRY POINT ──────────────────────────────
+async def run_scraper():
+    # Limpa Agenda Oficial velha (jogos passados) do radar
+    try:
+        from db import mark_past_agendas_as_tweeted
+        purged = mark_past_agendas_as_tweeted(NEWS_MAX_AGE_HOURS)
+        if purged:
+            print(f"[Scraper] Purgado {purged} Agenda(s) Oficial(is) passada(s).")
+    except Exception as e:
+        print(f"[Scraper] Cleanup falhou: {e}")
+    agenda_items = []
+    try:
+        a = check_agenda()
+        if a:
+            agenda_items = [agenda_to_item(a)]
+            print(f"[Agenda] Jogo {'HOJE' if a['hoje'] else 'AMANHÃ'}: Palmeiras x {a['adversario']}")
+    except Exception as e:
+        print(f"[Agenda] Erro: {e}")
+    rss_items = scrape_rss()
+    total = agenda_items + rss_items
+    print(f"[Scraper] Total: {len(total)} ({len(agenda_items)} agenda, {len(rss_items)} RSS + tweets do PC no banco).")
     return total

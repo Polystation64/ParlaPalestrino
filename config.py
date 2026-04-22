@@ -37,6 +37,6 @@ OPENAI_MODEL       = os.getenv("OPENAI_MODEL", "gpt-4o")
 # Configurações gerais
 SCRAPE_INTERVAL_MINUTES = int(os.getenv("SCRAPE_INTERVAL_MINUTES", "30"))
 MAX_NEWS_PER_RADAR      = int(os.getenv("MAX_NEWS_PER_RADAR", "8"))
-NEWS_MAX_AGE_HOURS      = 3
+NEWS_MAX_AGE_HOURS      = int(os.getenv("NEWS_MAX_AGE_HOURS", "6"))
 DB_PATH                 = os.getenv("DB_PATH", "data/news.db")
 TWSCRAPE_DB             = os.getenv("TWSCRAPE_DB", "data/accounts.db")
