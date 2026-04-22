@@ -28,7 +28,7 @@ _last_radar: dict = {}
 # ─────────────────────────────────────────────
 # RADAR CYCLE
 # ─────────────────────────────────────────────
-async def run_radar_cycle(app: Application) -> bool:
+async def run_radar_cycle(app: Application, chat_id=None) -> bool:
     logger.info("Iniciando ciclo do radar...")
     try:
         items     = await run_scraper()
@@ -49,7 +49,7 @@ async def run_radar_cycle(app: Application) -> bool:
         logger.info(f"Enriquecendo {len(top_dicts)} itens...")
         enriched = enrich_radar(top_dicts)
 
-        msg = await _send_radar(app, enriched)
+        msg = await _send_radar(app, enriched, chat_id)
         _last_radar[msg.message_id] = enriched
         if len(_last_radar) > 3:
             del _last_radar[min(_last_radar.keys())]
@@ -59,7 +59,7 @@ async def run_radar_cycle(app: Application) -> bool:
         logger.error(f"Erro no radar: {e}", exc_info=True)
         return False
 
-async def _send_radar(app: Application, items: list):
+async def _send_radar(app: Application, items: list, chat_id=None):
     # Hora em São Paulo (não UTC)
     now_sp = datetime.now(TZ_SP).strftime("%d/%m %H:%M")
     lines  = [f"🔍 *RADAR — PARLAPALESTRINO*", f"`{now_sp} (Brasília)`\n"]
@@ -67,9 +67,10 @@ async def _send_radar(app: Application, items: list):
     for idx, it in enumerate(items, 1):
         dot      = "🟢" if idx <= 2 else "🟡"
         label    = it.get("rotulo", "📌 CONTEXTO")
-        title    = it.get("titulo_curto") or it["title"][:70]
-        o_que    = it.get("o_que_e", "")
-        impacto  = it.get("por_que_importa", "")
+        # Escapando caracteres que quebram o parser do Markdown
+        title    = (it.get("titulo_curto") or it["title"][:70]).replace("_", "\\_").replace("*", "\\*")
+        o_que    = (it.get("o_que_e", "")).replace("_", "\\_").replace("*", "\\*")
+        impacto  = (it.get("por_que_importa", "")).replace("_", "\\_").replace("*", "\\*")
         is_rumor = it.get("is_rumor", False)
         has_img  = "🖼️" if it.get("image_url") else ""
         age_str  = _age_str(it["published_at"])
@@ -87,8 +88,9 @@ async def _send_radar(app: Application, items: list):
     if len(text) > 4000:
         text = text[:3950] + "\n\n_[truncado]_"
 
+    target = chat_id if chat_id else TELEGRAM_CHAT_ID
     return await app.bot.send_message(
-        chat_id=TELEGRAM_CHAT_ID,
+        chat_id=target,
         text=text,
         parse_mode="Markdown",
         disable_web_page_preview=True,
@@ -279,10 +281,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_radar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔄 Buscando e analisando...")
-    sent = await run_radar_cycle(context.application)
+    # Passa o chat_id de onde o comando foi chamado
+    sent = await run_radar_cycle(context.application, chat_id=update.message.chat_id)
     await msg.delete()
     if not sent:
         await update.message.reply_text("📭 Nenhuma notícia nova encontrada na janela de tempo atual.")
+    elif update.message.chat_id != TELEGRAM_CHAT_ID:
+        await update.message.reply_text("✅ Radar compilado e postado aqui!")
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
