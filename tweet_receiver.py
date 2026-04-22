@@ -62,9 +62,13 @@ class TweetReceiver(BaseHTTPRequestHandler):
                 if not pub:
                     pub = datetime.now(timezone.utc).isoformat()
 
+                text_body = t.get("text", "").strip()
+                if len(text_body) < 20:
+                    continue
+
                 items.append({
                     "hash":         hashlib.md5(url.encode()).hexdigest(),
-                    "title":        t.get("text", "")[:300],
+                    "title":        text_body[:300],
                     "url":          url,
                     "source":       t.get("source", "Twitter PC"),
                     "published_at": pub,

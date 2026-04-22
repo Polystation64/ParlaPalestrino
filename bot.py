@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 TZ_SP = ZoneInfo("America/Sao_Paulo")
 _last_radar: dict = {}
 
+_KW_PALM = ["palmeiras", "verdão", "alviverde", "abel", "veiga", "estêvão",
+            "weverton", "porco", "palestra", "sep", "libertadores", "paulistão"]
+
+def _is_palmeiras(item: dict) -> bool:
+    if "Twitter" not in item.get("source", ""):
+        return True  # feeds RSS já são do Palmeiras
+    title_lower = item["title"].lower()
+    return any(k in title_lower for k in _KW_PALM)
+
 
 def _dedup_titles(items: list, threshold: float = 0.5) -> list:
     """Remove itens com título muito similar ao de um item já selecionado (maior score vence)."""
@@ -64,6 +73,7 @@ async def run_radar_cycle(app: Application, chat_id=None) -> bool:
              "published_at": r[4], "score": r[5], "image_url": r[6]}
             for r in top
         ]
+        top_dicts = [d for d in top_dicts if _is_palmeiras(d) and len(d["title"].strip()) >= 20]
         top_dicts = _dedup_titles(top_dicts)
 
         logger.info(f"Enriquecendo {len(top_dicts)} itens...")
@@ -95,11 +105,15 @@ async def _send_radar(app: Application, items: list, chat_id=None):
         has_img  = "🖼️" if it.get("image_url") else ""
         age_str  = _age_str(it["published_at"])
 
+        url_safe = it.get("url", "").replace("(", "%28").replace(")", "%29")
         block = [f"{dot} *C{idx}) {label}*", title]
         if o_que:    block.append(f"🧩 {o_que}")
         if impacto:  block.append(f"⚡️ {impacto}")
         if is_rumor: block.append(f"⚠️ _Ainda não confirmado_")
-        block.append(f"📰 {it['source']} · {age_str} {has_img}")
+        fonte_line = f"📰 {it['source']} · {age_str} {has_img}"
+        if url_safe:
+            fonte_line += f"\n🔗 [Ver fonte]({url_safe})"
+        block.append(fonte_line)
         lines.append("\n".join(block))
 
     lines.append("\n_Responda com C1, C2... para gerar tweet (ex: `C1` ou `C1,C3`)_")
